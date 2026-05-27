@@ -52,7 +52,8 @@ class FileManager
             $this->options = array( // Setting up default values
                 'njt_fs_file_manager_settings' => array(
                     'root_folder_path' =>  ABSPATH,
-                    'root_folder_url' => site_url()
+                    'root_folder_url' => site_url(),
+                    'enable_sensitive_protection' => '1'
                 ),
             );
         }
@@ -209,9 +210,12 @@ class FileManager
     public function enqueueAdminScripts($suffix)
     {
         if (in_array($suffix, $this->hook_suffix)) {
-            $selectorThemes = get_option('njt_fs_selector_themes');
+            $selectorThemes = get_option('njt_fs_selector_themes', array());
+            if (!is_array($selectorThemes)) {
+                $selectorThemes = array();
+            }
             if (empty($selectorThemes[$this->userRole])) {
-                $selectorThemes[$this->userRole]['themesValue'] = 'Default';
+                $selectorThemes[$this->userRole] = array('themesValue' => 'Default');
                 update_option('njt_fs_selector_themes', $selectorThemes);
             }
         
@@ -273,6 +277,37 @@ class FileManager
         check_ajax_referer( 'file-manager-security-token', 'nonce' );
         $uploadMaxSize = isset($this->options['njt_fs_file_manager_settings']['upload_max_size']) && !empty($this->options['njt_fs_file_manager_settings']['upload_max_size']) ? $this->options['njt_fs_file_manager_settings']['upload_max_size'] : 0;
 
+        // Get and validate root folder path
+        $root_folder_path = isset($this->options['njt_fs_file_manager_settings']['root_folder_path']) && !empty($this->options['njt_fs_file_manager_settings']['root_folder_path']) 
+            ? $this->options['njt_fs_file_manager_settings']['root_folder_path'] 
+            : ABSPATH;
+        
+        // Get and validate root folder URL
+        $root_folder_url = isset($this->options['njt_fs_file_manager_settings']['root_folder_url']) && !empty($this->options['njt_fs_file_manager_settings']['root_folder_url']) 
+            ? $this->options['njt_fs_file_manager_settings']['root_folder_url'] 
+            : site_url();
+        
+        // Validate path exists and is readable - auto-fix if invalid
+        $path_needs_update = false;
+        if (!empty($root_folder_path) && (!is_dir($root_folder_path) || !is_readable($root_folder_path))) {
+            // Path is invalid, fallback to ABSPATH
+            $root_folder_path = ABSPATH;
+            $path_needs_update = true;
+        }
+        
+        // Validate URL - auto-update to current site_url() if path was invalid
+        // This ensures URL matches the new server/domain
+        if ($path_needs_update) {
+            $root_folder_url = site_url();
+        }
+        
+        // Auto-update saved settings if path/URL was invalid
+        if ($path_needs_update) {
+            $this->options['njt_fs_file_manager_settings']['root_folder_path'] = $root_folder_path;
+            $this->options['njt_fs_file_manager_settings']['root_folder_url'] = $root_folder_url;
+            update_option('njt_fs_settings', $this->options);
+        }
+
         $opts = array(
             'bind' => array(
                 'put.pre' => array(new \FileManagerHelper, 'madeStripcslashesFile'), // Check endcode when save file.
@@ -281,30 +316,21 @@ class FileManager
             'roots' => array(
                 array(
                     'driver' => 'LocalFileSystem',
-                    'path' => isset($this->options['njt_fs_file_manager_settings']['root_folder_path']) && !empty($this->options['njt_fs_file_manager_settings']['root_folder_path']) ? $this->options['njt_fs_file_manager_settings']['root_folder_path'] : ABSPATH,
-                    'URL' => isset($this->options['njt_fs_file_manager_settings']['root_folder_url']) && !empty($this->options['njt_fs_file_manager_settings']['root_folder_url']) ? $this->options['njt_fs_file_manager_settings']['root_folder_url'] : site_url(),
+                    'path' => $root_folder_path,
+                    'URL' => $root_folder_url,
+                    'tmpPath' => NJT_FS_BN_PLUGIN_PATH . 'includes/File_manager/lib/files/.tmp/',
                     'trashHash'     => '', // default is empty, when not enable trash
                     'uploadMaxSize' =>  $uploadMaxSize .'M',
                     'winHashFix'    => DIRECTORY_SEPARATOR !== '/', 
                     'uploadOrder'   => array('deny', 'allow'),
-                    'disabled' => array(''),
+                    'uploadDeny'    => array('htaccess'),
                     //'acceptedName' => 'validName',
                     'attributes' => array() // default is empty
                 ),
             ),
         );
 
-        // .htaccess
-        if(isset($this->options['njt_fs_file_manager_settings']['enable_htaccess']) && ($this->options['njt_fs_file_manager_settings']['enable_htaccess'] == '1')) {
-            $attributes = array(
-                'pattern' => '/.htaccess/',
-                'read' => false,
-                'write' => false,
-                'hidden' => true,
-                'locked' => false
-            );
-            array_push($opts['roots'][0]['attributes'], $attributes);
-        }
+    
 
         //Enable Trash
         if(isset($this->options['njt_fs_file_manager_settings']['enable_trash']) && ($this->options['njt_fs_file_manager_settings']['enable_trash'] == '1')) {
@@ -317,7 +343,7 @@ class FileManager
                 'uploadDeny'    => array('htaccess'), 
                 'uploadAllow'   => array('all'),
                 'uploadOrder'   => array('deny', 'allow'),
-                'acceptedName' => 'validName',
+               // 'acceptedName' => 'validName',
                 'attributes' => array(
                     array(
                         'pattern' => '/.tmb/',
@@ -348,13 +374,21 @@ class FileManager
             $opts['roots'][0]['disabled'] = $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['list_user_restrictions_alow_access'];
         }
         //Creat root path for user
+        $private_path_valid = false;
         if(!empty($this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_folder_access'])){
-            $opts['roots'][0]['path'] = $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_folder_access'] .'/';
+            $private_path = $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_folder_access'] .'/';
+            // Validate private folder path exists and is readable
+            if (is_dir($private_path) && is_readable($private_path)) {
+                $opts['roots'][0]['path'] = $private_path;
+                $private_path_valid = true;
+            }
+            // If invalid, keep using default root path (already validated above)
         }
 
          //Creat url root path for user
-         if(!empty($this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_url_folder_access'])){
-            $opts['roots'][0]['URL'] = $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_url_folder_access'] .'/';
+         if(!empty($this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_url_folder_access']) && $private_path_valid){
+            $private_url = $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$this->userRole]['private_url_folder_access'] .'/';
+            $opts['roots'][0]['URL'] = $private_url;
         }
 
         //Folder or File Paths That You want to Hide
@@ -444,7 +478,10 @@ class FileManager
                 if(in_array($key,$arrCanUploadMime)) {
                     $explodeValue = explode(',',$value);
                     foreach($explodeValue as $item) {
-                        array_push($opts['roots'][0]['uploadAllow'], $item );
+                        $listFileCanNotUpload = $mimeTypes->listFileCanNotUpload();
+                        if(!in_array($item, $listFileCanNotUpload)) {
+                            array_push($opts['roots'][0]['uploadAllow'], $item );
+                        }
                     }
                 }
           
@@ -471,7 +508,41 @@ class FileManager
         }
        }
 
-       
+        // Sensitive files protection
+        if(isset($this->options['njt_fs_file_manager_settings']['enable_sensitive_protection']) && ($this->options['njt_fs_file_manager_settings']['enable_sensitive_protection'] == '1')) {
+            $sensitive_files = apply_filters('njt_fs_sensitive_files', array(
+                '.htaccess',
+                'wp-config.php', 
+                '.env',
+                'wp-config-sample.php',
+                'readme.html',
+                'license.txt',
+                'xmlrpc.php'
+            ));
+
+            foreach ($sensitive_files as $file) {
+                $attributes = array(
+                    'pattern' => '/' . preg_quote($file, '/') . '/',
+                    'read' => $this->canAccessSensitiveFiles(),
+                    'write' => $this->canEditSensitiveFiles(),
+                    'hidden' => !$this->canAccessSensitiveFiles(),
+                    'locked' => !$this->canEditSensitiveFiles()
+                );
+                array_push($opts['roots'][0]['attributes'], $attributes);
+            }
+        }
+
+        // .htaccess
+        if(isset($this->options['njt_fs_file_manager_settings']['enable_htaccess']) && ($this->options['njt_fs_file_manager_settings']['enable_htaccess'] == '1')) {
+            $attributes = array(
+                'pattern' => '/.htaccess/',
+                'read' => true,
+                'write' => false,
+                'hidden' => true,
+                'locked' => true
+            );
+            array_push($opts['roots'][0]['attributes'], $attributes);
+        }
 
         //End --setting User Role Restrictions
 
@@ -486,17 +557,20 @@ class FileManager
         check_ajax_referer('njt-fs-file-manager-admin', 'nonce', true);
         
         $themesValue = sanitize_text_field ($_POST['themesValue']);
-        $selectorThemes = get_option('njt_fs_selector_themes');
+        $selectorThemes = get_option('njt_fs_selector_themes', array());
+        if (!is_array($selectorThemes)) {
+            $selectorThemes = array();
+        }
         if (empty($selectorThemes[$this->userRole])) {
-            $selectorThemes[$this->userRole]['themesValue'] = 'Default';
+            $selectorThemes[$this->userRole] = array('themesValue' => 'Default');
             update_option('njt_fs_selector_themes', $selectorThemes);
         }
-       
+
         if ($selectorThemes[$this->userRole]['themesValue'] != $themesValue) {
             $selectorThemes[$this->userRole]['themesValue'] = $themesValue;
             update_option('njt_fs_selector_themes', $selectorThemes);
         }
-        $selected_themes = get_option('njt_fs_selector_themes');
+        $selected_themes = $selectorThemes;
         $linkThemes = plugins_url('/lib/themes/' . $selected_themes[$this->userRole]['themesValue'] . '/css/theme.css', __FILE__);
         wp_send_json_success($linkThemes);
         wp_die();
@@ -547,13 +621,14 @@ class FileManager
             wp_die();
         }
 
-        $root_folder_path =  filter_var($_POST['root_folder_path'], FILTER_SANITIZE_STRING) ? str_replace("\\\\", "/", trim($_POST['root_folder_path'])) : '';
-        $root_folder_url =  filter_var($_POST['root_folder_url'], FILTER_SANITIZE_STRING) ? str_replace("\\\\", "/", trim($_POST['root_folder_url'])) : site_url();
-        $list_user_alow_access = filter_var($_POST['list_user_alow_access'], FILTER_SANITIZE_STRING) ? explode(',',$_POST['list_user_alow_access']) : array();
-        $upload_max_size = filter_var($_POST['upload_max_size'], FILTER_SANITIZE_STRING) ? sanitize_text_field(trim($_POST['upload_max_size'])) : 0;
-        $fm_locale = filter_var($_POST['fm_locale'], FILTER_SANITIZE_STRING) ? sanitize_text_field($_POST['fm_locale']) : 'en';
+        $root_folder_path = !empty($_POST['root_folder_path']) ? str_replace("\\\\", "/", trim(sanitize_text_field($_POST['root_folder_path']))) : '';
+        $root_folder_url = !empty($_POST['root_folder_url']) ? str_replace("\\\\", "/", trim(sanitize_url($_POST['root_folder_url']))) : site_url();
+        $list_user_alow_access = !empty($_POST['list_user_alow_access']) ? explode(',', sanitize_text_field($_POST['list_user_alow_access'])) : array();
+        $upload_max_size = !empty($_POST['upload_max_size']) ? sanitize_text_field(trim($_POST['upload_max_size'])) : 0;
+        $fm_locale = !empty($_POST['fm_locale']) ? sanitize_text_field($_POST['fm_locale']) : 'en';
         $enable_htaccess =  isset($_POST['enable_htaccess']) && $_POST['enable_htaccess'] == 'true' ? 1 : 0;
         $enable_trash = isset($_POST['enable_trash']) && $_POST['enable_trash'] == 'true' ? 1 : 0;
+        $enable_sensitive_protection = isset($_POST['enable_sensitive_protection']) && $_POST['enable_sensitive_protection'] == 'true' ? 1 : 0;
         //save options
         $this->options['njt_fs_file_manager_settings']['root_folder_path'] = $root_folder_path;
         $this->options['njt_fs_file_manager_settings']['root_folder_url'] = $root_folder_url;
@@ -562,6 +637,7 @@ class FileManager
         $this->options['njt_fs_file_manager_settings']['fm_locale'] = $fm_locale;
         $this->options['njt_fs_file_manager_settings']['enable_htaccess'] = $enable_htaccess;
         $this->options['njt_fs_file_manager_settings']['enable_trash'] = $enable_trash;
+        $this->options['njt_fs_file_manager_settings']['enable_sensitive_protection'] = $enable_sensitive_protection;
         //update options
         update_option('njt_fs_settings', $this->options);
         wp_send_json_success(get_option('njt_fs_settings'));
@@ -579,12 +655,19 @@ class FileManager
         if(! $_POST['njt_fs_list_user_restrictions']) wp_die();
 
         $njt_fs_list_user_restrictions = sanitize_text_field($_POST['njt_fs_list_user_restrictions']);
-        $list_user_restrictions_alow_access = filter_var($_POST['list_user_restrictions_alow_access'], FILTER_SANITIZE_STRING) ? explode(',', $_POST['list_user_restrictions_alow_access']) : array();
-        $private_folder_access = filter_var($_POST['private_folder_access'], FILTER_SANITIZE_STRING) ? str_replace("\\\\", "/", trim($_POST['private_folder_access'])) : '';
-        $private_url_folder_access = filter_var($_POST['private_url_folder_access'], FILTER_SANITIZE_STRING) ? str_replace("\\\\", "/", trim($_POST['private_url_folder_access'])) : '';
-        $hide_paths = filter_var($_POST['hide_paths'], FILTER_SANITIZE_STRING) ? explode('|', preg_replace('/\s+/', '', $_POST['hide_paths'])) : array();
-        $lock_files =  filter_var($_POST['lock_files'], FILTER_SANITIZE_STRING) ? explode('|', preg_replace('/\s+/', '', $_POST['lock_files'])) : array();
-        $can_upload_mime = filter_var($_POST['can_upload_mime'], FILTER_SANITIZE_STRING) ? explode(',', preg_replace('/\s+/', '', $_POST['can_upload_mime'])) : array();
+        $list_user_restrictions_alow_access = !empty($_POST['list_user_restrictions_alow_access']) ? explode(',', sanitize_text_field($_POST['list_user_restrictions_alow_access'])) : array();
+        $private_folder_access = !empty($_POST['private_folder_access']) ? str_replace("\\\\", "/", trim(sanitize_text_field($_POST['private_folder_access']))) : '';
+        $private_url_folder_access = !empty($_POST['private_url_folder_access']) ? str_replace("\\\\", "/", trim(sanitize_text_field($_POST['private_url_folder_access']))) : '';
+        $hide_paths = !empty($_POST['hide_paths']) ? explode('|', preg_replace('/\s+/', '', sanitize_text_field($_POST['hide_paths']))) : array();
+        $lock_files = !empty($_POST['lock_files']) ? explode('|', preg_replace('/\s+/', '', sanitize_text_field($_POST['lock_files']))) : array();
+
+        $can_upload_mime = !empty($_POST['can_upload_mime']) ? explode(',', preg_replace('/\s+/', '', sanitize_text_field($_POST['can_upload_mime']))) : array();
+
+        $can_upload_mime = array_filter($can_upload_mime, function($item) {
+            $helper = new \FileManagerHelper();
+            $listFileCanNotUpload = $helper->listFileCanNotUpload();
+            return !in_array($item, $listFileCanNotUpload);
+        });
 
         //save options
         $this->options['njt_fs_file_manager_settings']['list_user_role_restrictions'][$njt_fs_list_user_restrictions]['list_user_restrictions_alow_access'] = $list_user_restrictions_alow_access;
@@ -597,6 +680,24 @@ class FileManager
         update_option('njt_fs_settings', $this->options);
         wp_send_json_success(get_option('njt_fs_settings'));
         wp_die();
+    }
+
+    public function canAccessSensitiveFiles() {
+        // Filter hook for developers
+        if (apply_filters('njt_fs_allow_sensitive_access', false)) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function canEditSensitiveFiles() {
+        // Filter hook for developers
+        if (apply_filters('njt_fs_allow_sensitive_edit', false)) {
+            return true;
+        }
+        
+        return false;
     }
 
 }

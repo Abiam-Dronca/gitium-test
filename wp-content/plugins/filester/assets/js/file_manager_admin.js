@@ -208,6 +208,7 @@ const njtFileManager = {
       const fm_locale = jQuery("#fm_locale").val()
       const enable_htaccess = jQuery("#enable_htaccess").is(":checked")
       const enable_trash = jQuery("#enable_trash").is(":checked")
+      const enable_sensitive_protection = jQuery("#enable_sensitive_protection").is(":checked")
       const data = {
         'nonce': wpData.nonce,
         'action': 'njt_fs_save_setting',
@@ -217,7 +218,8 @@ const njtFileManager = {
         'upload_max_size': upload_max_size,
         'fm_locale': fm_locale,
         'enable_htaccess': enable_htaccess,
-        'enable_trash': enable_trash
+        'enable_trash': enable_trash,
+        'enable_sensitive_protection': enable_sensitive_protection
 
       }
       const toastr_opt = {
@@ -349,28 +351,29 @@ const njtFileManager = {
           '|', 'fullscreen', '|'
         ],
       },
-      uiOptions: {
+      uiOptions : {
         // toolbar configuration
-        toolbar: [
+        toolbar : [
           ['home', 'back', 'forward', 'up', 'reload'],
           ['netmount'],
           ['mkdir', 'mkfile', 'upload'],
           ['open', 'download', 'getfile'],
           ['undo', 'redo'],
-          ['copy', 'cut', 'paste', 'rm', 'empty'],
+          ['copy', 'cut', 'paste', 'rm', 'empty', 'hide'],
           ['duplicate', 'rename', 'edit', 'resize', 'chmod'],
           ['selectall', 'selectnone', 'selectinvert'],
           ['quicklook', 'info'],
           ['extract', 'archive'],
           ['search'],
           ['view', 'sort'],
-          ['help'],
+          ['preference', 'help'],
           ['fullscreen']
         ],
-        toolbarExtra: {
+        toolbarExtra : {
+          defaultHides: [],
           // show Preference button into contextmenu of the toolbar (true / false)
           preferenceInContextmenu: false
-        }
+        },
       },
       ui: ['toolbar', 'tree', 'path', 'stat'],
       customData: {
